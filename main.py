@@ -3,24 +3,43 @@ from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
 from dotenv import load_dotenv
 from langchain.chat_models import ChatOpenAI
-import os
 import openai
+from prompt_manager import Marketing, few_shot_prompt, system_prompt
+import tqdm
+from langchain.output_parsers import PydanticOutputParser
+from langchain.prompts import (
+    PromptTemplate,
+    FewShotChatMessagePromptTemplate,
+    ChatPromptTemplate,
+)
+from langchain.output_parsers import OutputFixingParser
+from langchain.prompts.chat import (
+    ChatPromptTemplate,
+    SystemMessagePromptTemplate,
+    AIMessagePromptTemplate,
+    HumanMessagePromptTemplate,
+)
+from langchain import PromptTemplate, OpenAI, LLMChain
+
 
 load_dotenv()
 
 
-def table_to_markdown(table):
-    headers = [cell["text"] for cell in table["columns"]]
-    header_row = "| " + " | ".join(headers) + " |"
-    separator_row = "| " + " | ".join(["---"] * len(headers)) + " |"
+def table_to_markdown(table_data):
+    rowCount = table_data.row_count
+    columnCount = table_data.column_count
+    cells = table_data.cells
+    table = [["" for _ in range(columnCount)] for _ in range(rowCount)]
 
-    rows = []
-    for row in table["rows"]:
-        row_data = [cell["text"] for cell in row]
-        rows.append("| " + " | ".join(row_data) + " |")
+    for cell in cells:
+        table[cell.row_index][cell.column_index] = cell.content
 
-    markdown_table = "\n".join([header_row, separator_row] + rows)
-    return markdown_table
+    markdown_table = []
+    for row in table:
+        markdown_table.append("| " + " | ".join(row) + " |")
+    markdown_table.insert(1, "| " + " | ".join(["---"] * columnCount) + " |")
+
+    return "\n".join(markdown_table)
 
 
 def analyze_doc(image_path):
@@ -41,21 +60,51 @@ def analyze_doc(image_path):
         for table in result.tables:
             markdown_tables.append(table_to_markdown(table))
 
-    return full_contents + "\n".join(markdown_tables)
+    return full_contents + "\n".join(markdown_tables) + '\n'
 
 
-def get_model():
+def get_model(temp=0.7):
     openai.organization = os.getenv("OPENAI_ORG")
     openai.api_key = os.getenv("OPENAI_API_KEY")
-    model_list = [x['id'] for x in openai.Model.list()['data']]
-    for model_name in model_list:
-        print(model_name)
-    # chat = ChatOpenAI(temperature=0)
+    llm = ChatOpenAI(model_name='gpt-3.5-turbo-16k',
+                     temperature=temp,
+                     openai_api_key=openai.api_key,
+                     openai_organization=openai.organization,
+                     request_timeout=60,
+                     )
+    return llm
+
+
+def get_prompt(few_shot_prompt):
+    final_prompt = ChatPromptTemplate.from_messages(
+        [SystemMessagePromptTemplate.from_template(system_prompt),
+         few_shot_prompt,
+         HumanMessagePromptTemplate.from_template("###input\n{contents}"),
+        ]
+    )
+    return final_prompt
 
 
 if __name__ == "__main__":
-    image_path = "img/test_1.jpg"
-    # contents = analyze_doc(image_path)
-    # print(contents)
+    image_path = "img/test_1"
+    contents = []
+    txt_file = [x for x in os.listdir(image_path) if x.endswith('.txt')]
+    if len(txt_file):
+        with open(txt_file[0], 'r') as f:
+            contents = '\n'.join(f.readlines())
+    else:
+        for img_path in tqdm.tqdm(sorted(os.listdir(image_path))):
+            contents.append(analyze_doc(os.path.join(image_path, img_path)))
+        contents = '\n'.join(contents)
 
-    get_model()
+    parser = PydanticOutputParser(pydantic_object=Marketing)
+    prompt = get_prompt(few_shot_prompt)
+    chain = LLMChain(llm=get_model(0.7),
+                     prompt=prompt,
+                     verbose=True)
+
+    result = chain.run(contents=contents, format_instructions=parser.get_format_instructions())
+    new_parser = OutputFixingParser.from_llm(parser=parser, llm=get_model(0.0))
+    new_parser.parse(result)
+    print(result)
+    print(new_parser.parse(result))
