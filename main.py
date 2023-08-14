@@ -90,12 +90,14 @@ if __name__ == "__main__":
     contents = []
     txt_file = [x for x in os.listdir(image_path) if x.endswith('.txt')]
     if len(txt_file):
-        with open(txt_file[0], 'r') as f:
+        with open(os.path.join(image_path, txt_file[0]), 'r') as f:
             contents = '\n'.join(f.readlines())
     else:
         for img_path in tqdm.tqdm(sorted(os.listdir(image_path))):
             contents.append(analyze_doc(os.path.join(image_path, img_path)))
         contents = '\n'.join(contents)
+        with open(os.path.join(image_path, 'contents.txt'), 'w') as f:
+            f.write(contents)
 
     parser = PydanticOutputParser(pydantic_object=Marketing)
     prompt = get_prompt(few_shot_prompt)
@@ -103,7 +105,8 @@ if __name__ == "__main__":
                      prompt=prompt,
                      verbose=True)
 
-    result = chain.run(contents=contents, format_instructions=parser.get_format_instructions())
+    target = "20대 외모에 신경쓰는 여성"
+    result = chain.run(contents=contents, target=target, format_instructions=parser.get_format_instructions())
     new_parser = OutputFixingParser.from_llm(parser=parser, llm=get_model(0.0))
     new_parser.parse(result)
     print(result)
